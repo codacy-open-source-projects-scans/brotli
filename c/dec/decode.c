@@ -6,9 +6,6 @@
 
 #include <brotli/decode.h>
 
-#include <stdlib.h>  /* free, malloc */
-#include <string.h>  /* memcpy, memset */
-
 #include "../common/constants.h"
 #include "../common/context.h"
 #include "../common/dictionary.h"
@@ -20,6 +17,7 @@
 #include "huffman.h"
 #include "prefix.h"
 #include "state.h"
+#include "static_init.h"
 
 #if defined(BROTLI_TARGET_NEON)
 #include <arm_neon.h>
@@ -46,16 +44,19 @@ extern "C" {
         255 prefix + 32 base + 255 suffix */
 static const brotli_reg_t kRingBufferWriteAheadSlack = 542;
 
-static const uint8_t kCodeLengthCodeOrder[BROTLI_CODE_LENGTH_CODES] = {
+static const BROTLI_MODEL("small")
+uint8_t kCodeLengthCodeOrder[BROTLI_CODE_LENGTH_CODES] = {
   1, 2, 3, 4, 0, 5, 17, 6, 16, 7, 8, 9, 10, 11, 12, 13, 14, 15,
 };
 
 /* Static prefix code for the complex code length code lengths. */
-static const uint8_t kCodeLengthPrefixLength[16] = {
+static const BROTLI_MODEL("small")
+uint8_t kCodeLengthPrefixLength[16] = {
   2, 2, 2, 3, 2, 2, 2, 4, 2, 2, 2, 3, 2, 2, 2, 4,
 };
 
-static const uint8_t kCodeLengthPrefixValue[16] = {
+static const BROTLI_MODEL("small")
+uint8_t kCodeLengthPrefixValue[16] = {
   0, 4, 3, 2, 0, 4, 3, 1, 0, 4, 3, 2, 0, 4, 3, 5,
 };
 
@@ -78,6 +79,10 @@ BROTLI_BOOL BrotliDecoderSetParameter(
 BrotliDecoderState* BrotliDecoderCreateInstance(
     brotli_alloc_func alloc_func, brotli_free_func free_func, void* opaque) {
   BrotliDecoderState* state = 0;
+  if (!BrotliDecoderEnsureStaticInit()) {
+    BROTLI_DUMP();
+    return 0;
+  }
   if (!alloc_func && !free_func) {
     state = (BrotliDecoderState*)malloc(sizeof(BrotliDecoderState));
   } else if (alloc_func && free_func) {
@@ -479,7 +484,7 @@ static BROTLI_INLINE int BrotliCopyPreloadedSymbolsToU8(const HuffmanCode* table
   /* Calculate range where CheckInputAmount is always true.
      Start with the number of bytes we can read. */
   int64_t new_lim = br->guard_in - br->next_in;
-  /* Convert to bits, since sybmols use variable number of bits. */
+  /* Convert to bits, since symbols use variable number of bits. */
   new_lim *= 8;
   /* At most 15 bits per symbol, so this is safe. */
   new_lim /= 15;
@@ -1410,6 +1415,7 @@ static BROTLI_BOOL BROTLI_NOINLINE BrotliEnsureRingBuffer(
 static BrotliDecoderErrorCode BROTLI_NOINLINE
 SkipMetadataBlock(BrotliDecoderState* s) {
   BrotliBitReader* br = &s->br;
+  int nbytes;
 
   if (s->meta_block_remaining_len == 0) {
     return BROTLI_DECODER_SUCCESS;
@@ -1420,7 +1426,7 @@ SkipMetadataBlock(BrotliDecoderState* s) {
   /* Drain accumulator. */
   if (BrotliGetAvailableBits(br) >= 8) {
     uint8_t buffer[8];
-    int nbytes = (int)(BrotliGetAvailableBits(br)) >> 3;
+    nbytes = (int)(BrotliGetAvailableBits(br)) >> 3;
     BROTLI_DCHECK(nbytes <= 8);
     if (nbytes > s->meta_block_remaining_len) {
       nbytes = s->meta_block_remaining_len;
@@ -1437,7 +1443,7 @@ SkipMetadataBlock(BrotliDecoderState* s) {
   }
 
   /* Direct access to metadata is possible. */
-  int nbytes = (int)BrotliGetRemainingBytes(br);
+  nbytes = (int)BrotliGetRemainingBytes(br);
   if (nbytes > s->meta_block_remaining_len) {
     nbytes = s->meta_block_remaining_len;
   }
@@ -1533,7 +1539,7 @@ static BROTLI_BOOL AttachCompoundDictionary(
   return BROTLI_TRUE;
 }
 
-static void EnsureCoumpoundDictionaryInitialized(BrotliDecoderState* state) {
+static void EnsureCompoundDictionaryInitialized(BrotliDecoderState* state) {
   BrotliDecoderCompoundDictionary* addon = state->compound_dictionary;
   /* 256 = (1 << 8) slots in block map. */
   int block_bits = 8;
@@ -1554,7 +1560,7 @@ static BROTLI_BOOL InitializeCompoundDictionaryCopy(BrotliDecoderState* s,
     int address, int length) {
   BrotliDecoderCompoundDictionary* addon = s->compound_dictionary;
   int index;
-  EnsureCoumpoundDictionaryInitialized(s);
+  EnsureCompoundDictionaryInitialized(s);
   index = addon->block_map[address >> addon->block_bits];
   while (address >= addon->chunk_offsets[index + 1]) index++;
   if (addon->total_size < address + length) return BROTLI_FALSE;
@@ -2939,16 +2945,15 @@ void BrotliDecoderSetMetadataCallbacks(
 
 /* Escalate internal functions visibility; for testing purposes only. */
 #if defined(BROTLI_TEST)
-BROTLI_BOOL SafeReadSymbolForTest(
+BROTLI_BOOL BrotliSafeReadSymbolForTest(
     const HuffmanCode*, BrotliBitReader*, brotli_reg_t*);
-BROTLI_BOOL SafeReadSymbolForTest(
+BROTLI_BOOL BrotliSafeReadSymbolForTest(
     const HuffmanCode* table, BrotliBitReader* br, brotli_reg_t* result) {
   return SafeReadSymbol(table, br, result);
 }
-
-void InverseMoveToFrontTransformForTest(
+void BrotliInverseMoveToFrontTransformForTest(
     uint8_t*, brotli_reg_t, BrotliDecoderState*);
-void InverseMoveToFrontTransformForTest(
+void BrotliInverseMoveToFrontTransformForTest(
     uint8_t* v, brotli_reg_t l, BrotliDecoderState* s) {
   InverseMoveToFrontTransform(v, l, s);
 }
